@@ -10,7 +10,8 @@ import (
 )
 
 type RoomHandler struct {
-	DB *sql.DB
+	DB  *sql.DB
+	Hub *Hub
 }
 
 type createRoomReq struct {
@@ -177,22 +178,19 @@ func (h *RoomHandler) GetParticipants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.DB.Query("SELECT id, name FROM participants WHERE room_id = ?", roomID)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+	// Return only currently connected participants
+	connectedIDs := h.Hub.ConnectedParticipantIDs(roomID)
 
 	type p struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	}
 	var participants []p
-	for rows.Next() {
-		var pt p
-		rows.Scan(&pt.ID, &pt.Name)
-		participants = append(participants, pt)
+	for _, pid := range connectedIDs {
+		var name string
+		if err := h.DB.QueryRow("SELECT name FROM participants WHERE id = ?", pid).Scan(&name); err == nil {
+			participants = append(participants, p{ID: pid, Name: name})
+		}
 	}
 	if participants == nil {
 		participants = []p{}

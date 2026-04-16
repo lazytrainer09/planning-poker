@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -26,13 +25,11 @@ type Client struct {
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[int64]map[*Client]bool
-	DB    *sql.DB
 }
 
-func NewHub(db *sql.DB) *Hub {
+func NewHub() *Hub {
 	return &Hub{
 		rooms: make(map[int64]map[*Client]bool),
-		DB:    db,
 	}
 }
 
@@ -58,6 +55,23 @@ func (h *Hub) Unregister(client *Client) {
 	}
 	close(client.Send)
 	log.Printf("Client unregistered: room=%d participant=%d", client.RoomID, client.ParticipantID)
+}
+
+// ConnectedParticipantIDs returns unique participant IDs currently connected to a room.
+func (h *Hub) ConnectedParticipantIDs(roomID int64) []int64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[int64]bool)
+	var ids []int64
+	if clients, ok := h.rooms[roomID]; ok {
+		for client := range clients {
+			if !seen[client.ParticipantID] {
+				seen[client.ParticipantID] = true
+				ids = append(ids, client.ParticipantID)
+			}
+		}
+	}
+	return ids
 }
 
 func (h *Hub) Broadcast(roomID int64, msg interface{}) {
@@ -134,10 +148,6 @@ func (c *Client) writePump() {
 func (c *Client) readPump(hub *Hub) {
 	defer func() {
 		hub.Unregister(c)
-		// Remove participant from DB on disconnect
-		if hub.DB != nil {
-			hub.DB.Exec("DELETE FROM participants WHERE id = ?", c.ParticipantID)
-		}
 		hub.Broadcast(c.RoomID, map[string]interface{}{
 			"type": "participant_left",
 			"payload": map[string]interface{}{

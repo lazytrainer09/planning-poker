@@ -31,6 +31,17 @@ export default function VotingPage() {
   const [questionSets, setQuestionSets] = useState<QuestionSet[]>([])
   const [nextQsId, setNextQsId] = useState<number | ''>('')
 
+  // Reset state when session changes (e.g. "次の見積もりへ")
+  useEffect(() => {
+    setQuestions([])
+    setAnswers({})
+    setSubmitted(false)
+    setStatuses([])
+    setRevealed(false)
+    setResults([])
+    setNextQsId('')
+  }, [sid])
+
   // Load question sets for "next estimation" picker
   useEffect(() => {
     api.listQuestionSets(rid).then(setQuestionSets).catch(() => {})
@@ -58,6 +69,9 @@ export default function VotingPage() {
     try {
       const data = await api.getVoteStatus(sid)
       setStatuses(data.participants)
+      if (data.question_set_id) {
+        setNextQsId(data.question_set_id)
+      }
       if (data.status === 'revealed') {
         setRevealed(true)
         const r = await api.getResults(sid)

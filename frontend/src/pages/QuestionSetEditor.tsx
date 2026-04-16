@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../api'
+import { connectWS } from '../ws'
 
 interface QuestionInput {
   text: string
@@ -12,6 +13,14 @@ export default function QuestionSetEditor() {
   const navigate = useNavigate()
   const rid = Number(roomId)
   const editId = qsId ? Number(qsId) : null
+
+  const participantId = Number(sessionStorage.getItem('participant_id'))
+
+  // Keep WS alive so participant is not deleted during editing
+  useEffect(() => {
+    const disconnect = connectWS(rid, participantId, () => {})
+    return disconnect
+  }, [rid, participantId])
 
   const [name, setName] = useState('')
   const [questions, setQuestions] = useState<QuestionInput[]>([

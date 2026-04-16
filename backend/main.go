@@ -25,9 +25,9 @@ func main() {
 	}
 	defer database.Close()
 
-	hub := handler.NewHub(database)
+	hub := handler.NewHub()
 
-	roomH := &handler.RoomHandler{DB: database}
+	roomH := &handler.RoomHandler{DB: database, Hub: hub}
 	questionH := &handler.QuestionHandler{DB: database}
 	sessionH := &handler.SessionHandler{DB: database, Hub: hub}
 

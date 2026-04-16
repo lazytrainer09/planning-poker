@@ -1,6 +1,8 @@
 # Go
-planning-poker
-planning_poker.db
+backend/planning-poker
+*.db
+*.db-shm
+*.db-wal
 
 # Frontend
 frontend/node_modules/

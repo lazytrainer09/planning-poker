@@ -38,6 +38,7 @@ export interface SessionInfo {
 
 export interface VoteStatusResponse {
   status: string;
+  question_set_id: number;
   participants: {
     participant_id: number;
     participant_name: string;

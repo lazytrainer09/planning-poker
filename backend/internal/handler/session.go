@@ -216,8 +216,8 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var roomID int64
-	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+	var roomID, questionSetID int64
+	if err := h.DB.QueryRow("SELECT room_id, question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID, &questionSetID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -260,8 +260,9 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":       status,
-		"participants": statuses,
+		"status":          status,
+		"question_set_id": questionSetID,
+		"participants":    statuses,
 	})
 }
 
