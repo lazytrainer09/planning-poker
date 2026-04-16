@@ -1,0 +1,5 @@
+planning-poker
+planning_poker.db
+frontend/node_modules
+frontend/dist
+.git

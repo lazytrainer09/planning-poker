@@ -1,0 +1,14 @@
+# Go
+planning-poker
+planning_poker.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

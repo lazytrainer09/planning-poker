@@ -1,0 +1,21 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  backend:
+    build: .
+    expose:
+      - "8080"
+    volumes:
+      - poker-data:/app/data
+    environment:
+      - PORT=8080
+      - DB_PATH=/app/data/planning_poker.db
+    restart: unless-stopped
+
+volumes:
+  poker-data:
