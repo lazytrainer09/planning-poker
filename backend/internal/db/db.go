@@ -62,7 +62,7 @@ func migrate(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 		participant_id INTEGER NOT NULL REFERENCES participants(id),
-		question_id INTEGER NOT NULL REFERENCES questions(id),
+		question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
 		text TEXT NOT NULL,
 		UNIQUE(session_id, participant_id, question_id)
 	);

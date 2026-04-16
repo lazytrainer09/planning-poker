@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,8 +16,8 @@ type QuestionHandler struct {
 }
 
 type createQSetReq struct {
-	Name      string           `json:"name"`
-	Questions []questionInput  `json:"questions"`
+	Name      string          `json:"name"`
+	Questions []questionInput `json:"questions"`
 }
 
 type questionInput struct {
@@ -25,7 +26,11 @@ type questionInput struct {
 }
 
 func (h *QuestionHandler) ListQuestionSets(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
 
 	rows, err := h.DB.Query(
 		"SELECT id, room_id, name, created_at, updated_at FROM question_sets WHERE room_id = ? ORDER BY id",
@@ -40,7 +45,10 @@ func (h *QuestionHandler) ListQuestionSets(w http.ResponseWriter, r *http.Reques
 	var sets []model.QuestionSet
 	for rows.Next() {
 		var qs model.QuestionSet
-		rows.Scan(&qs.ID, &qs.RoomID, &qs.Name, &qs.CreatedAt, &qs.UpdatedAt)
+		if err := rows.Scan(&qs.ID, &qs.RoomID, &qs.Name, &qs.CreatedAt, &qs.UpdatedAt); err != nil {
+			log.Printf("scan question_set: %v", err)
+			continue
+		}
 		sets = append(sets, qs)
 	}
 
@@ -51,11 +59,15 @@ func (h *QuestionHandler) ListQuestionSets(w http.ResponseWriter, r *http.Reques
 			sets[i].ID,
 		)
 		if err != nil {
+			log.Printf("query questions for set %d: %v", sets[i].ID, err)
 			continue
 		}
 		for qrows.Next() {
 			var q model.Question
-			qrows.Scan(&q.ID, &q.QuestionSetID, &q.Text, &q.SortOrder)
+			if err := qrows.Scan(&q.ID, &q.QuestionSetID, &q.Text, &q.SortOrder); err != nil {
+				log.Printf("scan question: %v", err)
+				continue
+			}
 			sets[i].Questions = append(sets[i].Questions, q)
 		}
 		qrows.Close()
@@ -72,7 +84,11 @@ func (h *QuestionHandler) ListQuestionSets(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *QuestionHandler) CreateQuestionSet(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
 
 	var req createQSetReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -92,10 +108,12 @@ func (h *QuestionHandler) CreateQuestionSet(w http.ResponseWriter, r *http.Reque
 	qsID, _ := res.LastInsertId()
 
 	for _, q := range req.Questions {
-		h.DB.Exec(
+		if _, err := h.DB.Exec(
 			"INSERT INTO questions (question_set_id, text, sort_order) VALUES (?, ?, ?)",
 			qsID, q.Text, q.SortOrder,
-		)
+		); err != nil {
+			log.Printf("insert question: %v", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -103,7 +121,11 @@ func (h *QuestionHandler) CreateQuestionSet(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *QuestionHandler) UpdateQuestionSet(w http.ResponseWriter, r *http.Request) {
-	qsID, _ := strconv.ParseInt(r.PathValue("qsID"), 10, 64)
+	qsID, err := strconv.ParseInt(r.PathValue("qsID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid question set id", http.StatusBadRequest)
+		return
+	}
 
 	var req createQSetReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -111,14 +133,21 @@ func (h *QuestionHandler) UpdateQuestionSet(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.DB.Exec("UPDATE question_sets SET name = ?, updated_at = ? WHERE id = ?", req.Name, time.Now(), qsID)
+	if _, err := h.DB.Exec("UPDATE question_sets SET name = ?, updated_at = ? WHERE id = ?", req.Name, time.Now(), qsID); err != nil {
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	// Delete answers referencing these questions first (FK constraint)
+	h.DB.Exec("DELETE FROM answers WHERE question_id IN (SELECT id FROM questions WHERE question_set_id = ?)", qsID)
 	h.DB.Exec("DELETE FROM questions WHERE question_set_id = ?", qsID)
 
 	for _, q := range req.Questions {
-		h.DB.Exec(
+		if _, err := h.DB.Exec(
 			"INSERT INTO questions (question_set_id, text, sort_order) VALUES (?, ?, ?)",
 			qsID, q.Text, q.SortOrder,
-		)
+		); err != nil {
+			log.Printf("insert question: %v", err)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -126,7 +155,11 @@ func (h *QuestionHandler) UpdateQuestionSet(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *QuestionHandler) DeleteQuestionSet(w http.ResponseWriter, r *http.Request) {
-	qsID, _ := strconv.ParseInt(r.PathValue("qsID"), 10, 64)
+	qsID, err := strconv.ParseInt(r.PathValue("qsID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid question set id", http.StatusBadRequest)
+		return
+	}
 
 	h.DB.Exec("DELETE FROM question_sets WHERE id = ?", qsID)
 	w.WriteHeader(http.StatusOK)

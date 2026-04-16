@@ -10,7 +10,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<TopPage />} />
         <Route path="/room/:roomId" element={<RoomPage />} />
-        <Route path="/room/:roomId/question-set/:qsId?" element={<QuestionSetEditor />} />
+        <Route path="/room/:roomId/question-set" element={<QuestionSetEditor />} />
+        <Route path="/room/:roomId/question-set/:qsId" element={<QuestionSetEditor />} />
         <Route path="/room/:roomId/vote/:sessionId" element={<VotingPage />} />
       </Routes>
     </div>

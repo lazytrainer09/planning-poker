@@ -8,6 +8,11 @@ COPY internal/ ./internal/
 COPY main.go ./
 RUN CGO_ENABLED=1 go build -o planning-poker .
 
+# Test stage
+FROM builder AS test
+CMD ["go", "test", "./...", "-v", "-count=1"]
+
+# Production stage
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /app

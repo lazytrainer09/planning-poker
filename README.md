@@ -48,21 +48,24 @@ frontend (Nginx :3000)        backend (Go :8080)
 ```
 planning-poker/
 ├── docker-compose.yml
-├── Dockerfile                 # バックエンド用
-├── main.go                    # エントリポイント
-├── internal/
-│   ├── db/db.go               # SQLite スキーマ
-│   ├── model/model.go         # データモデル
-│   └── handler/
-│       ├── room.go            # ルーム API
-│       ├── question.go        # 質問セット CRUD
-│       ├── session.go         # 投票セッション
-│       └── ws.go              # WebSocket ハブ
+├── backend/
+│   ├── Dockerfile             # バックエンド用
+│   ├── main.go                # エントリポイント
+│   └── internal/
+│       ├── db/db.go           # SQLite スキーマ
+│       ├── model/model.go     # データモデル
+│       └── handler/
+│           ├── room.go        # ルーム API
+│           ├── question.go    # 質問セット CRUD
+│           ├── session.go     # 投票セッション
+│           ├── ws.go          # WebSocket ハブ
+│           └── handler_test.go # API テスト
 └── frontend/
     ├── Dockerfile             # フロントエンド用
     ├── nginx.conf
     └── src/
         ├── api.ts / ws.ts     # API・WSクライアント
+        ├── test/              # フロントエンドテスト
         └── pages/
             ├── TopPage.tsx          # ルーム作成・ログイン
             ├── RoomPage.tsx         # ルームトップ

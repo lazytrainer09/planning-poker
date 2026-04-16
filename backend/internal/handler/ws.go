@@ -17,13 +17,14 @@ var upgrader = websocket.Upgrader{
 type Client struct {
 	RoomID        int64
 	ParticipantID int64
+	mu            sync.Mutex
 	Conn          *websocket.Conn
 	Send          chan []byte
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	rooms   map[int64]map[*Client]bool
+	mu    sync.RWMutex
+	rooms map[int64]map[*Client]bool
 }
 
 func NewHub() *Hub {
@@ -56,6 +57,23 @@ func (h *Hub) Unregister(client *Client) {
 	log.Printf("Client unregistered: room=%d participant=%d", client.RoomID, client.ParticipantID)
 }
 
+// ConnectedParticipantIDs returns unique participant IDs currently connected to a room.
+func (h *Hub) ConnectedParticipantIDs(roomID int64) []int64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[int64]bool)
+	var ids []int64
+	if clients, ok := h.rooms[roomID]; ok {
+		for client := range clients {
+			if !seen[client.ParticipantID] {
+				seen[client.ParticipantID] = true
+				ids = append(ids, client.ParticipantID)
+			}
+		}
+	}
+	return ids
+}
+
 func (h *Hub) Broadcast(roomID int64, msg interface{}) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -77,8 +95,16 @@ func (h *Hub) Broadcast(roomID int64, msg interface{}) {
 }
 
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
-	participantID, _ := strconv.ParseInt(r.URL.Query().Get("participant_id"), 10, 64)
+	roomID, err := strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room_id", http.StatusBadRequest)
+		return
+	}
+	participantID, err := strconv.ParseInt(r.URL.Query().Get("participant_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid participant_id", http.StatusBadRequest)
+		return
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -110,7 +136,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 func (c *Client) writePump() {
 	defer c.Conn.Close()
 	for msg := range c.Send {
-		if err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		c.mu.Lock()
+		err := c.Conn.WriteMessage(websocket.TextMessage, msg)
+		c.mu.Unlock()
+		if err != nil {
 			return
 		}
 	}
@@ -133,7 +162,5 @@ func (c *Client) readPump(hub *Hub) {
 		if err != nil {
 			break
 		}
-		// We don't process incoming WS messages from clients for now
-		// All mutations go through REST API
 	}
 }

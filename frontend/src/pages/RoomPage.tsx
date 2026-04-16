@@ -12,6 +12,24 @@ export default function RoomPage() {
 
   const [questionSets, setQuestionSets] = useState<QuestionSet[]>([])
   const [participants, setParticipants] = useState<{ id: number; name: string }[]>([])
+  const [validated, setValidated] = useState(false)
+
+  // Validate participant on mount (handles page reload)
+  useEffect(() => {
+    if (!participantId) {
+      navigate('/')
+      return
+    }
+    api.validateParticipant(rid, participantId)
+      .then((res) => {
+        sessionStorage.setItem('room_name', res.room_name)
+        setValidated(true)
+      })
+      .catch(() => {
+        sessionStorage.clear()
+        navigate('/')
+      })
+  }, [rid, participantId, navigate])
 
   const loadData = useCallback(async () => {
     const [qs, ps] = await Promise.all([
@@ -23,8 +41,8 @@ export default function RoomPage() {
   }, [rid])
 
   useEffect(() => {
-    loadData()
-  }, [loadData])
+    if (validated) loadData()
+  }, [loadData, validated])
 
   useEffect(() => {
     const disconnect = connectWS(rid, participantId, (msg) => {

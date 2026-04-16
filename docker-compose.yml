@@ -7,7 +7,7 @@ services:
       - backend
 
   backend:
-    build: .
+    build: ./backend
     expose:
       - "8080"
     volumes:
@@ -16,6 +16,18 @@ services:
       - PORT=8080
       - DB_PATH=/app/data/planning_poker.db
     restart: unless-stopped
+
+  backend-test:
+    build:
+      context: ./backend
+      target: test
+    profiles: [test]
+
+  frontend-test:
+    build:
+      context: ./frontend
+      target: test
+    profiles: [test]
 
 volumes:
   poker-data:

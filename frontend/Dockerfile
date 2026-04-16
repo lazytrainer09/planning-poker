@@ -6,6 +6,11 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+# Test stage
+FROM builder AS test
+CMD ["npm", "test"]
+
+# Production stage
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
