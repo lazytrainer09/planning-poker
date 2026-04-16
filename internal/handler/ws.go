@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -17,18 +18,21 @@ var upgrader = websocket.Upgrader{
 type Client struct {
 	RoomID        int64
 	ParticipantID int64
+	mu            sync.Mutex
 	Conn          *websocket.Conn
 	Send          chan []byte
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	rooms   map[int64]map[*Client]bool
+	mu    sync.RWMutex
+	rooms map[int64]map[*Client]bool
+	DB    *sql.DB
 }
 
-func NewHub() *Hub {
+func NewHub(db *sql.DB) *Hub {
 	return &Hub{
 		rooms: make(map[int64]map[*Client]bool),
+		DB:    db,
 	}
 }
 
@@ -77,8 +81,16 @@ func (h *Hub) Broadcast(roomID int64, msg interface{}) {
 }
 
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
-	participantID, _ := strconv.ParseInt(r.URL.Query().Get("participant_id"), 10, 64)
+	roomID, err := strconv.ParseInt(r.URL.Query().Get("room_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room_id", http.StatusBadRequest)
+		return
+	}
+	participantID, err := strconv.ParseInt(r.URL.Query().Get("participant_id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid participant_id", http.StatusBadRequest)
+		return
+	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -110,7 +122,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 func (c *Client) writePump() {
 	defer c.Conn.Close()
 	for msg := range c.Send {
-		if err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		c.mu.Lock()
+		err := c.Conn.WriteMessage(websocket.TextMessage, msg)
+		c.mu.Unlock()
+		if err != nil {
 			return
 		}
 	}
@@ -119,6 +134,10 @@ func (c *Client) writePump() {
 func (c *Client) readPump(hub *Hub) {
 	defer func() {
 		hub.Unregister(c)
+		// Remove participant from DB on disconnect
+		if hub.DB != nil {
+			hub.DB.Exec("DELETE FROM participants WHERE id = ?", c.ParticipantID)
+		}
 		hub.Broadcast(c.RoomID, map[string]interface{}{
 			"type": "participant_left",
 			"payload": map[string]interface{}{
@@ -133,7 +152,5 @@ func (c *Client) readPump(hub *Hub) {
 		if err != nil {
 			break
 		}
-		// We don't process incoming WS messages from clients for now
-		// All mutations go through REST API
 	}
 }

@@ -11,7 +11,9 @@ export default function TopPage() {
   const [newPass, setNewPass] = useState('')
 
   // Login
+  const [loginMode, setLoginMode] = useState<'select' | 'name'>('select')
   const [loginRoomId, setLoginRoomId] = useState<number | ''>('')
+  const [loginRoomName, setLoginRoomName] = useState('')
   const [loginPass, setLoginPass] = useState('')
   const [loginName, setLoginName] = useState('')
   const [error, setError] = useState('')
@@ -34,9 +36,15 @@ export default function TopPage() {
 
   const handleLogin = async () => {
     setError('')
-    if (!loginRoomId) return
+    if (loginMode === 'select' && !loginRoomId) return
+    if (loginMode === 'name' && !loginRoomName.trim()) return
     try {
-      const res = await api.login(loginRoomId as number, loginPass, loginName)
+      const res = await api.login(
+        loginMode === 'select' ? (loginRoomId as number) : 0,
+        loginMode === 'name' ? loginRoomName.trim() : '',
+        loginPass,
+        loginName,
+      )
       sessionStorage.setItem('participant_id', String(res.participant_id))
       sessionStorage.setItem('participant_name', loginName)
       sessionStorage.setItem('room_name', res.room_name)
@@ -44,6 +52,14 @@ export default function TopPage() {
     } catch (e: any) {
       setError(e.message)
     }
+  }
+
+  const selectStyle = {
+    width: '100%',
+    padding: '10px 14px',
+    border: '2px solid #e0e0e0',
+    borderRadius: '8px',
+    fontSize: '1rem',
   }
 
   return (
@@ -84,24 +100,40 @@ export default function TopPage() {
           <h2>ルームに参加</h2>
           <div className="form-group">
             <label>ルーム</label>
-            <select
-              value={loginRoomId}
-              onChange={(e) => setLoginRoomId(e.target.value ? Number(e.target.value) : '')}
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                border: '2px solid #e0e0e0',
-                borderRadius: '8px',
-                fontSize: '1rem',
-              }}
-            >
-              <option value="">ルームを選択...</option>
-              {rooms.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name} (ID: {r.id})
-                </option>
-              ))}
-            </select>
+            <div className="btn-group" style={{ marginBottom: 8 }}>
+              <button
+                className={loginMode === 'select' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'}
+                onClick={() => setLoginMode('select')}
+              >
+                一覧から選択
+              </button>
+              <button
+                className={loginMode === 'name' ? 'btn-primary btn-sm' : 'btn-secondary btn-sm'}
+                onClick={() => setLoginMode('name')}
+              >
+                ルーム名で入力
+              </button>
+            </div>
+            {loginMode === 'select' ? (
+              <select
+                value={loginRoomId}
+                onChange={(e) => setLoginRoomId(e.target.value ? Number(e.target.value) : '')}
+                style={selectStyle}
+              >
+                <option value="">ルームを選択...</option>
+                {rooms.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={loginRoomName}
+                onChange={(e) => setLoginRoomName(e.target.value)}
+                placeholder="ルーム名を入力"
+              />
+            )}
           </div>
           <div className="form-group">
             <label>合言葉</label>

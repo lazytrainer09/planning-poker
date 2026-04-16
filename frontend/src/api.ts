@@ -58,13 +58,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, passphrase }),
     }),
-  login: (room_id: number, passphrase: string, name: string) =>
+  login: (room_id: number, room_name: string, passphrase: string, name: string) =>
     request<{ room_id: number; room_name: string; participant_id: number }>(
       '/rooms/login',
-      { method: 'POST', body: JSON.stringify({ room_id, passphrase, name }) }
+      { method: 'POST', body: JSON.stringify({ room_id: room_id || undefined, room_name: room_name || undefined, passphrase, name }) }
     ),
   getParticipants: (roomId: number) =>
     request<{ id: number; name: string }[]>(`/rooms/${roomId}/participants`),
+  validateParticipant: (roomId: number, participantId: number) =>
+    request<{ valid: boolean; name: string; room_name: string }>(
+      `/rooms/${roomId}/participants/${participantId}/validate`
+    ),
   listQuestionSets: (roomId: number) =>
     request<QuestionSet[]>(`/rooms/${roomId}/question-sets`),
   createQuestionSet: (

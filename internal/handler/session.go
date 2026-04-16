@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 )
@@ -17,12 +18,16 @@ type startSessionReq struct {
 }
 
 type submitAnswersReq struct {
-	ParticipantID int64            `json:"participant_id"`
+	ParticipantID int64             `json:"participant_id"`
 	Answers       map[string]string `json:"answers"` // question_id (string) -> text
 }
 
 func (h *SessionHandler) StartSession(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
 
 	var req startSessionReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -59,7 +64,10 @@ func (h *SessionHandler) StartSession(w http.ResponseWriter, r *http.Request) {
 	var questions []qItem
 	for rows.Next() {
 		var q qItem
-		rows.Scan(&q.ID, &q.Text, &q.SortOrder)
+		if err := rows.Scan(&q.ID, &q.Text, &q.SortOrder); err != nil {
+			log.Printf("scan question: %v", err)
+			continue
+		}
 		questions = append(questions, q)
 	}
 
@@ -81,7 +89,11 @@ func (h *SessionHandler) StartSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SessionHandler) SubmitAnswers(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
 	var req submitAnswersReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -90,18 +102,26 @@ func (h *SessionHandler) SubmitAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for qIDStr, text := range req.Answers {
-		qID, _ := strconv.ParseInt(qIDStr, 10, 64)
-		h.DB.Exec(
+		qID, err := strconv.ParseInt(qIDStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		if _, err := h.DB.Exec(
 			`INSERT INTO answers (session_id, participant_id, question_id, text)
 			 VALUES (?, ?, ?, ?)
 			 ON CONFLICT(session_id, participant_id, question_id) DO UPDATE SET text = ?`,
 			sessionID, req.ParticipantID, qID, text, text,
-		)
+		); err != nil {
+			log.Printf("insert answer: %v", err)
+		}
 	}
 
 	// Get room_id for broadcast
 	var roomID int64
-	h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID)
+	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	// Get participant name
 	var participantName string
@@ -132,20 +152,27 @@ func (h *SessionHandler) SubmitAnswers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":             "ok",
-		"voted":              votedParticipants,
-		"total":              totalParticipants,
-		"all_voted":          votedParticipants >= totalParticipants && totalParticipants > 0,
+		"status":    "ok",
+		"voted":     votedParticipants,
+		"total":     totalParticipants,
+		"all_voted": votedParticipants >= totalParticipants && totalParticipants > 0,
 	})
 }
 
 func (h *SessionHandler) RevealResults(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
 	h.DB.Exec("UPDATE sessions SET status = 'revealed' WHERE id = ?", sessionID)
 
 	var roomID int64
-	h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID)
+	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	h.broadcastResults(roomID, sessionID)
 
@@ -154,10 +181,17 @@ func (h *SessionHandler) RevealResults(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SessionHandler) ResetSession(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
-	var roomID, questionSetID int64
-	h.DB.QueryRow("SELECT room_id, question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID, &questionSetID)
+	var roomID int64
+	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	// Delete answers and reset status
 	h.DB.Exec("DELETE FROM answers WHERE session_id = ?", sessionID)
@@ -176,10 +210,17 @@ func (h *SessionHandler) ResetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
 	var roomID int64
-	h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID)
+	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	// Get all participants
 	rows, err := h.DB.Query("SELECT id, name FROM participants WHERE room_id = ?", roomID)
@@ -198,7 +239,10 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 	var statuses []statusItem
 	for rows.Next() {
 		var s statusItem
-		rows.Scan(&s.ParticipantID, &s.ParticipantName)
+		if err := rows.Scan(&s.ParticipantID, &s.ParticipantName); err != nil {
+			log.Printf("scan participant: %v", err)
+			continue
+		}
 
 		var count int
 		h.DB.QueryRow(
@@ -222,11 +266,14 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SessionHandler) GetSessionQuestions(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
 	var questionSetID int64
-	err := h.DB.QueryRow("SELECT question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&questionSetID)
-	if err != nil {
+	if err := h.DB.QueryRow("SELECT question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&questionSetID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -249,7 +296,10 @@ func (h *SessionHandler) GetSessionQuestions(w http.ResponseWriter, r *http.Requ
 	var questions []qItem
 	for rows.Next() {
 		var q qItem
-		rows.Scan(&q.ID, &q.Text, &q.SortOrder)
+		if err := rows.Scan(&q.ID, &q.Text, &q.SortOrder); err != nil {
+			log.Printf("scan question: %v", err)
+			continue
+		}
 		questions = append(questions, q)
 	}
 	if questions == nil {
@@ -261,7 +311,11 @@ func (h *SessionHandler) GetSessionQuestions(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *SessionHandler) GetResults(w http.ResponseWriter, r *http.Request) {
-	sessionID, _ := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	sessionID, err := strconv.ParseInt(r.PathValue("sessionID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 
 	results := h.loadResults(sessionID)
 
@@ -286,7 +340,7 @@ func (h *SessionHandler) loadResults(sessionID int64) []map[string]interface{} {
 		ORDER BY a.participant_id, a.question_id
 	`, sessionID)
 	if err != nil {
-		return nil
+		return []map[string]interface{}{}
 	}
 	defer rows.Close()
 
@@ -294,7 +348,10 @@ func (h *SessionHandler) loadResults(sessionID int64) []map[string]interface{} {
 	for rows.Next() {
 		var pid, qid int64
 		var name, text string
-		rows.Scan(&pid, &name, &qid, &text)
+		if err := rows.Scan(&pid, &name, &qid, &text); err != nil {
+			log.Printf("scan result: %v", err)
+			continue
+		}
 
 		if _, ok := resultMap[pid]; !ok {
 			resultMap[pid] = map[string]interface{}{

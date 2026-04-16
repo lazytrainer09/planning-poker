@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { api, ResultEntry } from '../api'
+import { api, ResultEntry, QuestionSet } from '../api'
 import { connectWS } from '../ws'
 
 interface QuestionItem {
@@ -28,13 +28,25 @@ export default function VotingPage() {
   const [statuses, setStatuses] = useState<ParticipantStatus[]>([])
   const [revealed, setRevealed] = useState(false)
   const [results, setResults] = useState<ResultEntry[]>([])
+  const [questionSets, setQuestionSets] = useState<QuestionSet[]>([])
+  const [nextQsId, setNextQsId] = useState<number | ''>('')
+
+  // Load question sets for "next estimation" picker
+  useEffect(() => {
+    api.listQuestionSets(rid).then(setQuestionSets).catch(() => {})
+  }, [rid])
 
   // Load questions: try sessionStorage first, then API fallback
   useEffect(() => {
     const stored = sessionStorage.getItem(`session_${sid}_questions`)
     if (stored) {
-      setQuestions(JSON.parse(stored))
-    } else {
+      try {
+        setQuestions(JSON.parse(stored))
+      } catch {
+        sessionStorage.removeItem(`session_${sid}_questions`)
+      }
+    }
+    if (!stored) {
       api.getSessionQuestions(sid).then((qs) => {
         setQuestions(qs)
         sessionStorage.setItem(`session_${sid}_questions`, JSON.stringify(qs))
@@ -91,12 +103,24 @@ export default function VotingPage() {
   }, [rid, participantId, sid, loadStatus, navigate])
 
   const handleSubmit = async () => {
-    await api.submitAnswers(sid, participantId, answers)
+    const res = await api.submitAnswers(sid, participantId, answers)
     setSubmitted(true)
+    if (res.all_voted) {
+      const results = await api.getResults(sid)
+      setRevealed(true)
+      setResults(results)
+    }
   }
 
   const handleReset = async () => {
     await api.resetSession(sid)
+  }
+
+  const handleNextEstimation = async () => {
+    if (!nextQsId) return
+    const res = await api.startSession(rid, nextQsId as number)
+    sessionStorage.setItem(`session_${res.session_id}_questions`, JSON.stringify(res.questions))
+    navigate(`/room/${rid}/vote/${res.session_id}`)
   }
 
   const handleBackToRoom = () => {
@@ -192,13 +216,42 @@ export default function VotingPage() {
             </tbody>
           </table>
 
-          <div className="btn-group" style={{ marginTop: 20 }}>
-            <button className="btn-danger" onClick={handleReset}>
-              再投票
-            </button>
-            <button className="btn-primary" onClick={handleBackToRoom}>
-              次の見積もりへ
-            </button>
+          <div style={{ marginTop: 20 }}>
+            <div className="btn-group">
+              <button className="btn-danger" onClick={handleReset}>
+                再投票
+              </button>
+              <button className="btn-secondary" onClick={handleBackToRoom}>
+                ルームに戻る
+              </button>
+            </div>
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <select
+                value={nextQsId}
+                onChange={(e) => setNextQsId(e.target.value ? Number(e.target.value) : '')}
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  border: '2px solid #e0e0e0',
+                  borderRadius: '8px',
+                  fontSize: '0.95rem',
+                }}
+              >
+                <option value="">質問セットを選択...</option>
+                {questionSets.map((qs) => (
+                  <option key={qs.id} value={qs.id}>
+                    {qs.name} ({qs.questions.length}問)
+                  </option>
+                ))}
+              </select>
+              <button
+                className="btn-primary"
+                onClick={handleNextEstimation}
+                disabled={!nextQsId}
+              >
+                次の見積もりへ
+              </button>
+            </div>
           </div>
         </div>
       )}

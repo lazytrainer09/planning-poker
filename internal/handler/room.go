@@ -20,6 +20,7 @@ type createRoomReq struct {
 
 type loginRoomReq struct {
 	RoomID     int64  `json:"room_id"`
+	RoomName   string `json:"room_name"`
 	Passphrase string `json:"passphrase"`
 	Name       string `json:"name"`
 }
@@ -65,13 +66,28 @@ func (h *RoomHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var roomID int64
 	var roomName, hashedPassphrase string
-	err := h.DB.QueryRow("SELECT name, passphrase FROM rooms WHERE id = ?", req.RoomID).Scan(&roomName, &hashedPassphrase)
-	if err == sql.ErrNoRows {
-		http.Error(w, "room not found", http.StatusNotFound)
-		return
-	} else if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+	if req.RoomID > 0 {
+		err := h.DB.QueryRow("SELECT id, name, passphrase FROM rooms WHERE id = ?", req.RoomID).Scan(&roomID, &roomName, &hashedPassphrase)
+		if err == sql.ErrNoRows {
+			http.Error(w, "room not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+	} else if req.RoomName != "" {
+		err := h.DB.QueryRow("SELECT id, name, passphrase FROM rooms WHERE name = ?", req.RoomName).Scan(&roomID, &roomName, &hashedPassphrase)
+		if err == sql.ErrNoRows {
+			http.Error(w, "room not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "room_id or room_name required", http.StatusBadRequest)
 		return
 	}
 
@@ -80,7 +96,7 @@ func (h *RoomHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.DB.Exec("INSERT INTO participants (room_id, name) VALUES (?, ?)", req.RoomID, req.Name)
+	res, err := h.DB.Exec("INSERT INTO participants (room_id, name) VALUES (?, ?)", roomID, req.Name)
 	if err != nil {
 		http.Error(w, "failed to join", http.StatusInternalServerError)
 		return
@@ -89,7 +105,7 @@ func (h *RoomHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(loginResp{
-		RoomID:        req.RoomID,
+		RoomID:        roomID,
 		RoomName:      roomName,
 		ParticipantID: pid,
 	})
@@ -121,8 +137,45 @@ func (h *RoomHandler) ListRooms(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(rooms)
 }
 
+func (h *RoomHandler) ValidateParticipant(w http.ResponseWriter, r *http.Request) {
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
+	participantID, err := strconv.ParseInt(r.PathValue("participantID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid participant id", http.StatusBadRequest)
+		return
+	}
+
+	var name string
+	err = h.DB.QueryRow("SELECT name FROM participants WHERE id = ? AND room_id = ?", participantID, roomID).Scan(&name)
+	if err == sql.ErrNoRows {
+		http.Error(w, "invalid session", http.StatusUnauthorized)
+		return
+	} else if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	var roomName string
+	h.DB.QueryRow("SELECT name FROM rooms WHERE id = ?", roomID).Scan(&roomName)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"valid":     true,
+		"name":      name,
+		"room_name": roomName,
+	})
+}
+
 func (h *RoomHandler) GetParticipants(w http.ResponseWriter, r *http.Request) {
-	roomID, _ := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
 
 	rows, err := h.DB.Query("SELECT id, name FROM participants WHERE room_id = ?", roomID)
 	if err != nil {

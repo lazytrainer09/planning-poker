@@ -25,7 +25,7 @@ func main() {
 	}
 	defer database.Close()
 
-	hub := handler.NewHub()
+	hub := handler.NewHub(database)
 
 	roomH := &handler.RoomHandler{DB: database}
 	questionH := &handler.QuestionHandler{DB: database}
@@ -38,6 +38,7 @@ func main() {
 	mux.HandleFunc("GET /api/rooms", roomH.ListRooms)
 	mux.HandleFunc("POST /api/rooms/login", roomH.Login)
 	mux.HandleFunc("GET /api/rooms/{roomID}/participants", roomH.GetParticipants)
+	mux.HandleFunc("GET /api/rooms/{roomID}/participants/{participantID}/validate", roomH.ValidateParticipant)
 
 	mux.HandleFunc("GET /api/rooms/{roomID}/question-sets", questionH.ListQuestionSets)
 	mux.HandleFunc("POST /api/rooms/{roomID}/question-sets", questionH.CreateQuestionSet)
