@@ -137,8 +137,6 @@ func (h *QuestionHandler) UpdateQuestionSet(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "failed to update", http.StatusInternalServerError)
 		return
 	}
-	// Delete answers referencing these questions first (FK constraint)
-	h.DB.Exec("DELETE FROM answers WHERE question_id IN (SELECT id FROM questions WHERE question_set_id = ?)", qsID)
 	h.DB.Exec("DELETE FROM questions WHERE question_set_id = ?", qsID)
 
 	for _, q := range req.Questions {
