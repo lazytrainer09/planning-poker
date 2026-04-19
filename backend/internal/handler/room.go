@@ -97,12 +97,7 @@ func (h *RoomHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.DB.Exec("INSERT INTO participants (room_id, name) VALUES (?, ?)", roomID, req.Name)
-	if err != nil {
-		http.Error(w, "failed to join", http.StatusInternalServerError)
-		return
-	}
-	pid, _ := res.LastInsertId()
+	pid := h.Hub.AddParticipant(roomID, req.Name)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(loginResp{
@@ -150,13 +145,9 @@ func (h *RoomHandler) ValidateParticipant(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var name string
-	err = h.DB.QueryRow("SELECT name FROM participants WHERE id = ? AND room_id = ?", participantID, roomID).Scan(&name)
-	if err == sql.ErrNoRows {
+	name, ok := h.Hub.GetParticipant(roomID, participantID)
+	if !ok {
 		http.Error(w, "invalid session", http.StatusUnauthorized)
-		return
-	} else if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -178,19 +169,13 @@ func (h *RoomHandler) GetParticipants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return only currently connected participants
-	connectedIDs := h.Hub.ConnectedParticipantIDs(roomID)
-
 	type p struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	}
 	var participants []p
-	for _, pid := range connectedIDs {
-		var name string
-		if err := h.DB.QueryRow("SELECT name FROM participants WHERE id = ?", pid).Scan(&name); err == nil {
-			participants = append(participants, p{ID: pid, Name: name})
-		}
+	for _, mp := range h.Hub.GetParticipantsForRoom(roomID) {
+		participants = append(participants, p{ID: mp.ID, Name: mp.Name})
 	}
 	if participants == nil {
 		participants = []p{}

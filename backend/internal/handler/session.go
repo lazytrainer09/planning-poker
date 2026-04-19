@@ -35,17 +35,9 @@ func (h *SessionHandler) StartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.DB.Exec(
-		"INSERT INTO sessions (room_id, question_set_id, status) VALUES (?, ?, 'voting')",
-		roomID, req.QuestionSetID,
-	)
-	if err != nil {
-		http.Error(w, "failed to create session", http.StatusInternalServerError)
-		return
-	}
-	sessionID, _ := res.LastInsertId()
+	sessionID := h.Hub.StartSession(roomID, req.QuestionSetID)
 
-	// Load questions for the session
+	// Load questions for the session from DB (questions are still persisted)
 	rows, err := h.DB.Query(
 		"SELECT id, text, sort_order FROM questions WHERE question_set_id = ? ORDER BY sort_order",
 		req.QuestionSetID,
@@ -106,29 +98,19 @@ func (h *SessionHandler) SubmitAnswers(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		if _, err := h.DB.Exec(
-			`INSERT INTO answers (session_id, participant_id, question_id, text)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(session_id, participant_id, question_id) DO UPDATE SET text = ?`,
-			sessionID, req.ParticipantID, qID, text, text,
-		); err != nil {
-			log.Printf("insert answer: %v", err)
-		}
+		h.Hub.SubmitAnswer(sessionID, req.ParticipantID, qID, text)
 	}
 
-	// Get room_id for broadcast
-	var roomID int64
-	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+	sess, ok := h.Hub.GetSession(sessionID)
+	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	// Get participant name
-	var participantName string
-	h.DB.QueryRow("SELECT name FROM participants WHERE id = ?", req.ParticipantID).Scan(&participantName)
+	participantName, _ := h.Hub.GetParticipantName(req.ParticipantID)
 
 	// Broadcast vote status update
-	h.Hub.Broadcast(roomID, map[string]interface{}{
+	h.Hub.Broadcast(sess.RoomID, map[string]interface{}{
 		"type": "vote_submitted",
 		"payload": map[string]interface{}{
 			"participant_id":   req.ParticipantID,
@@ -136,26 +118,20 @@ func (h *SessionHandler) SubmitAnswers(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	// Check if all participants have voted
-	var totalParticipants, votedParticipants int
-	h.DB.QueryRow("SELECT COUNT(*) FROM participants WHERE room_id = ?", roomID).Scan(&totalParticipants)
-	h.DB.QueryRow(
-		"SELECT COUNT(DISTINCT participant_id) FROM answers WHERE session_id = ?",
-		sessionID,
-	).Scan(&votedParticipants)
+	voted, total := h.Hub.CountVotes(sessionID, sess.RoomID)
 
-	if votedParticipants >= totalParticipants && totalParticipants > 0 {
+	if voted >= total && total > 0 {
 		// Auto-reveal
-		h.DB.Exec("UPDATE sessions SET status = 'revealed' WHERE id = ?", sessionID)
-		h.broadcastResults(roomID, sessionID)
+		h.Hub.SetSessionStatus(sessionID, "revealed")
+		h.broadcastResults(sess.RoomID, sessionID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "ok",
-		"voted":     votedParticipants,
-		"total":     totalParticipants,
-		"all_voted": votedParticipants >= totalParticipants && totalParticipants > 0,
+		"voted":     voted,
+		"total":     total,
+		"all_voted": voted >= total && total > 0,
 	})
 }
 
@@ -166,15 +142,14 @@ func (h *SessionHandler) RevealResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.DB.Exec("UPDATE sessions SET status = 'revealed' WHERE id = ?", sessionID)
-
-	var roomID int64
-	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+	sess, ok := h.Hub.GetSession(sessionID)
+	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	h.broadcastResults(roomID, sessionID)
+	h.Hub.SetSessionStatus(sessionID, "revealed")
+	h.broadcastResults(sess.RoomID, sessionID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "revealed"})
@@ -187,18 +162,17 @@ func (h *SessionHandler) ResetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var roomID int64
-	if err := h.DB.QueryRow("SELECT room_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID); err != nil {
+	sess, ok := h.Hub.GetSession(sessionID)
+	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	// Delete answers and reset status
-	h.DB.Exec("DELETE FROM answers WHERE session_id = ?", sessionID)
-	h.DB.Exec("UPDATE sessions SET status = 'voting' WHERE id = ?", sessionID)
+	h.Hub.ClearAnswers(sessionID)
+	h.Hub.SetSessionStatus(sessionID, "voting")
 
 	// Broadcast reset
-	h.Hub.Broadcast(roomID, map[string]interface{}{
+	h.Hub.Broadcast(sess.RoomID, map[string]interface{}{
 		"type": "session_reset",
 		"payload": map[string]interface{}{
 			"session_id": sessionID,
@@ -216,19 +190,13 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var roomID, questionSetID int64
-	if err := h.DB.QueryRow("SELECT room_id, question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&roomID, &questionSetID); err != nil {
+	sess, ok := h.Hub.GetSession(sessionID)
+	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	// Get all participants
-	rows, err := h.DB.Query("SELECT id, name FROM participants WHERE room_id = ?", roomID)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+	participants := h.Hub.GetParticipantsForRoom(sess.RoomID)
 
 	type statusItem struct {
 		ParticipantID   int64  `json:"participant_id"`
@@ -236,32 +204,19 @@ func (h *SessionHandler) GetVoteStatus(w http.ResponseWriter, r *http.Request) {
 		HasVoted        bool   `json:"has_voted"`
 	}
 
-	var statuses []statusItem
-	for rows.Next() {
-		var s statusItem
-		if err := rows.Scan(&s.ParticipantID, &s.ParticipantName); err != nil {
-			log.Printf("scan participant: %v", err)
-			continue
-		}
-
-		var count int
-		h.DB.QueryRow(
-			"SELECT COUNT(*) FROM answers WHERE session_id = ? AND participant_id = ?",
-			sessionID, s.ParticipantID,
-		).Scan(&count)
-		s.HasVoted = count > 0
-
-		statuses = append(statuses, s)
+	statuses := make([]statusItem, 0, len(participants))
+	for _, p := range participants {
+		statuses = append(statuses, statusItem{
+			ParticipantID:   p.ID,
+			ParticipantName: p.Name,
+			HasVoted:        h.Hub.HasVoted(sessionID, p.ID),
+		})
 	}
-
-	// Get session status
-	var status string
-	h.DB.QueryRow("SELECT status FROM sessions WHERE id = ?", sessionID).Scan(&status)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":          status,
-		"question_set_id": questionSetID,
+		"status":          sess.Status,
+		"question_set_id": sess.QuestionSetID,
 		"participants":    statuses,
 	})
 }
@@ -273,15 +228,15 @@ func (h *SessionHandler) GetSessionQuestions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var questionSetID int64
-	if err := h.DB.QueryRow("SELECT question_set_id FROM sessions WHERE id = ?", sessionID).Scan(&questionSetID); err != nil {
+	sess, ok := h.Hub.GetSession(sessionID)
+	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
 	rows, err := h.DB.Query(
 		"SELECT id, text, sort_order FROM questions WHERE question_set_id = ? ORDER BY sort_order",
-		questionSetID,
+		sess.QuestionSetID,
 	)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -333,40 +288,20 @@ func (h *SessionHandler) broadcastResults(roomID, sessionID int64) {
 }
 
 func (h *SessionHandler) loadResults(sessionID int64) []map[string]interface{} {
-	rows, err := h.DB.Query(`
-		SELECT a.participant_id, p.name, a.question_id, a.text
-		FROM answers a
-		JOIN participants p ON p.id = a.participant_id
-		WHERE a.session_id = ?
-		ORDER BY a.participant_id, a.question_id
-	`, sessionID)
-	if err != nil {
-		return []map[string]interface{}{}
-	}
-	defer rows.Close()
-
-	resultMap := make(map[int64]map[string]interface{})
-	for rows.Next() {
-		var pid, qid int64
-		var name, text string
-		if err := rows.Scan(&pid, &name, &qid, &text); err != nil {
-			log.Printf("scan result: %v", err)
-			continue
-		}
-
-		if _, ok := resultMap[pid]; !ok {
-			resultMap[pid] = map[string]interface{}{
-				"participant_id":   pid,
-				"participant_name": name,
-				"answers":          map[string]string{},
-			}
-		}
-		resultMap[pid]["answers"].(map[string]string)[strconv.FormatInt(qid, 10)] = text
-	}
+	allAnswers := h.Hub.GetAnswers(sessionID)
 
 	var results []map[string]interface{}
-	for _, v := range resultMap {
-		results = append(results, v)
+	for pid, questionAnswers := range allAnswers {
+		name, _ := h.Hub.GetParticipantName(pid)
+		answersStr := make(map[string]string, len(questionAnswers))
+		for qid, text := range questionAnswers {
+			answersStr[strconv.FormatInt(qid, 10)] = text
+		}
+		results = append(results, map[string]interface{}{
+			"participant_id":   pid,
+			"participant_name": name,
+			"answers":          answersStr,
+		})
 	}
 	if results == nil {
 		results = []map[string]interface{}{}

@@ -42,30 +42,6 @@ func migrate(db *sql.DB) error {
 		text TEXT NOT NULL,
 		sort_order INTEGER NOT NULL DEFAULT 0
 	);
-
-	CREATE TABLE IF NOT EXISTS sessions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-		question_set_id INTEGER NOT NULL REFERENCES question_sets(id),
-		status TEXT NOT NULL DEFAULT 'voting',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS participants (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-		name TEXT NOT NULL,
-		connected_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS answers (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-		participant_id INTEGER NOT NULL REFERENCES participants(id),
-		question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-		text TEXT NOT NULL,
-		UNIQUE(session_id, participant_id, question_id)
-	);
 	`
 	_, err := db.Exec(schema)
 	return err
