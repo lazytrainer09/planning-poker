@@ -162,6 +162,24 @@ func (h *RoomHandler) ValidateParticipant(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// Leave immediately removes a participant from a room. Called via
+// navigator.sendBeacon on pagehide so intentional exits reflect without
+// waiting for the WebSocket grace period.
+func (h *RoomHandler) Leave(w http.ResponseWriter, r *http.Request) {
+	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
+	participantID, err := strconv.ParseInt(r.PathValue("participantID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid participant id", http.StatusBadRequest)
+		return
+	}
+	h.Hub.RemoveParticipantNow(roomID, participantID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *RoomHandler) GetParticipants(w http.ResponseWriter, r *http.Request) {
 	roomID, err := strconv.ParseInt(r.PathValue("roomID"), 10, 64)
 	if err != nil {

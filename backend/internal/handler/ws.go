@@ -7,9 +7,15 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// ParticipantRemovalGrace is how long a participant's record is retained
+// after their last WebSocket connection drops. A reconnect within this
+// window (page reload, transient network blip) cancels removal.
+const ParticipantRemovalGrace = 30 * time.Second
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -24,7 +30,8 @@ type Client struct {
 }
 
 // InMemParticipant holds participant data managed by Hub.
-// Participants persist until server restart; disconnect does not remove them.
+// A participant is removed ParticipantRemovalGrace after their last
+// WebSocket disconnect (see Hub.Unregister).
 type InMemParticipant struct {
 	ID     int64
 	RoomID int64
@@ -53,6 +60,11 @@ type Hub struct {
 	// answers: sessionID -> participantID -> questionID -> text
 	answers map[int64]map[int64]map[int64]string
 
+	// pendingRemoval: participantID -> timer. Scheduled when the
+	// participant's last client disconnects; canceled on reconnect.
+	pendingRemoval map[int64]*time.Timer
+	removalGrace   time.Duration
+
 	nextParticipantID atomic.Int64
 	nextSessionID     atomic.Int64
 }
@@ -64,6 +76,8 @@ func NewHub() *Hub {
 		roomParticipants: make(map[int64][]int64),
 		sessions:         make(map[int64]*InMemSession),
 		answers:          make(map[int64]map[int64]map[int64]string),
+		pendingRemoval:   make(map[int64]*time.Timer),
+		removalGrace:     ParticipantRemovalGrace,
 	}
 }
 
@@ -198,26 +212,138 @@ func (h *Hub) ClearAnswers(sessionID int64) {
 
 func (h *Hub) Register(client *Client) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.rooms[client.RoomID] == nil {
 		h.rooms[client.RoomID] = make(map[*Client]bool)
 	}
 	h.rooms[client.RoomID][client] = true
+	if t, ok := h.pendingRemoval[client.ParticipantID]; ok {
+		t.Stop()
+		delete(h.pendingRemoval, client.ParticipantID)
+	}
+	total := len(h.rooms[client.RoomID])
+	h.mu.Unlock()
 	log.Printf("Client registered: room=%d participant=%d (total in room: %d)",
-		client.RoomID, client.ParticipantID, len(h.rooms[client.RoomID]))
+		client.RoomID, client.ParticipantID, total)
 }
 
-func (h *Hub) Unregister(client *Client) {
+// Unregister removes a WebSocket client. If no other clients for the same
+// participant remain in the room, a delayed removal is scheduled; a reconnect
+// within removalGrace cancels it (see Register).
+// Returns true when the participant still has other active connections, so
+// the caller can decide whether a transient disconnect should be silent.
+func (h *Hub) Unregister(client *Client) (stillConnected bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if clients, ok := h.rooms[client.RoomID]; ok {
 		delete(clients, client)
 		if len(clients) == 0 {
 			delete(h.rooms, client.RoomID)
+		} else {
+			for c := range clients {
+				if c.ParticipantID == client.ParticipantID {
+					stillConnected = true
+					break
+				}
+			}
 		}
 	}
 	close(client.Send)
-	log.Printf("Client unregistered: room=%d participant=%d", client.RoomID, client.ParticipantID)
+	if !stillConnected {
+		if existing, ok := h.pendingRemoval[client.ParticipantID]; ok {
+			existing.Stop()
+		}
+		pid := client.ParticipantID
+		rid := client.RoomID
+		h.pendingRemoval[pid] = time.AfterFunc(h.removalGrace, func() {
+			h.finalizeRemoval(rid, pid)
+		})
+	}
+	h.mu.Unlock()
+	log.Printf("Client unregistered: room=%d participant=%d stillConnected=%v",
+		client.RoomID, client.ParticipantID, stillConnected)
+	return
+}
+
+// finalizeRemoval runs when the grace timer fires. It removes the participant
+// from the Hub if no client reconnected in the meantime, and broadcasts
+// participant_left to the room.
+func (h *Hub) finalizeRemoval(roomID, participantID int64) {
+	h.mu.Lock()
+	if _, scheduled := h.pendingRemoval[participantID]; !scheduled {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.pendingRemoval, participantID)
+
+	if clients, ok := h.rooms[roomID]; ok {
+		for c := range clients {
+			if c.ParticipantID == participantID {
+				h.mu.Unlock()
+				return
+			}
+		}
+	}
+	removed := h.removeParticipantLocked(roomID, participantID)
+	h.mu.Unlock()
+
+	if removed {
+		log.Printf("Participant removed after grace: room=%d participant=%d", roomID, participantID)
+		h.broadcastParticipantLeft(roomID, participantID)
+	}
+}
+
+// RemoveParticipantNow removes a participant immediately, bypassing the grace
+// period. Intended for explicit leave signals (sendBeacon on pagehide).
+// Returns false if the participant did not exist in the room.
+func (h *Hub) RemoveParticipantNow(roomID, participantID int64) bool {
+	h.mu.Lock()
+	if t, ok := h.pendingRemoval[participantID]; ok {
+		t.Stop()
+		delete(h.pendingRemoval, participantID)
+	}
+	removed := h.removeParticipantLocked(roomID, participantID)
+	h.mu.Unlock()
+
+	if removed {
+		log.Printf("Participant removed on explicit leave: room=%d participant=%d", roomID, participantID)
+		h.broadcastParticipantLeft(roomID, participantID)
+	}
+	return removed
+}
+
+// removeParticipantLocked deletes all state for a participant. Caller must hold h.mu.
+// Returns false if the participant did not belong to the given room.
+func (h *Hub) removeParticipantLocked(roomID, participantID int64) bool {
+	p, ok := h.participants[participantID]
+	if !ok || p.RoomID != roomID {
+		return false
+	}
+	delete(h.participants, participantID)
+	if ids, ok := h.roomParticipants[roomID]; ok {
+		filtered := ids[:0]
+		for _, id := range ids {
+			if id != participantID {
+				filtered = append(filtered, id)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(h.roomParticipants, roomID)
+		} else {
+			h.roomParticipants[roomID] = filtered
+		}
+	}
+	for sid := range h.answers {
+		delete(h.answers[sid], participantID)
+	}
+	return true
+}
+
+func (h *Hub) broadcastParticipantLeft(roomID, participantID int64) {
+	h.Broadcast(roomID, map[string]interface{}{
+		"type": "participant_left",
+		"payload": map[string]interface{}{
+			"participant_id": participantID,
+		},
+	})
 }
 
 func (h *Hub) Broadcast(roomID int64, msg interface{}) {
@@ -294,12 +420,6 @@ func (c *Client) writePump() {
 func (c *Client) readPump(hub *Hub) {
 	defer func() {
 		hub.Unregister(c)
-		hub.Broadcast(c.RoomID, map[string]interface{}{
-			"type": "participant_left",
-			"payload": map[string]interface{}{
-				"participant_id": c.ParticipantID,
-			},
-		})
 		c.Conn.Close()
 	}()
 

@@ -125,4 +125,15 @@ export const api = {
     request<VoteStatusResponse>(`/sessions/${sessionId}/status`),
   getResults: (sessionId: number) =>
     request<ResultEntry[]>(`/sessions/${sessionId}/results`),
+  // leaveRoom signals an intentional exit so the server removes the
+  // participant immediately (skipping the WebSocket grace period).
+  // Uses sendBeacon when available so it survives pagehide/unload.
+  leaveRoom: (roomId: number, participantId: number) => {
+    const url = `${BASE}/rooms/${roomId}/participants/${participantId}/leave`;
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      navigator.sendBeacon(url);
+      return;
+    }
+    fetch(url, { method: 'POST', keepalive: true }).catch(() => {});
+  },
 };

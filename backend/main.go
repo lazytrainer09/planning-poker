@@ -39,6 +39,7 @@ func main() {
 	mux.HandleFunc("POST /api/rooms/login", roomH.Login)
 	mux.HandleFunc("GET /api/rooms/{roomID}/participants", roomH.GetParticipants)
 	mux.HandleFunc("GET /api/rooms/{roomID}/participants/{participantID}/validate", roomH.ValidateParticipant)
+	mux.HandleFunc("POST /api/rooms/{roomID}/participants/{participantID}/leave", roomH.Leave)
 
 	mux.HandleFunc("GET /api/rooms/{roomID}/question-sets", questionH.ListQuestionSets)
 	mux.HandleFunc("POST /api/rooms/{roomID}/question-sets", questionH.CreateQuestionSet)
