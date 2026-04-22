@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { api, QuestionSet } from '../api'
 import { connectWS } from '../ws'
 
@@ -66,6 +66,12 @@ export default function RoomPage() {
     navigate(`/room/${rid}/vote/${res.session_id}`)
   }
 
+  const handleLeave = () => {
+    api.leaveRoom(rid, participantId)
+    sessionStorage.clear()
+    navigate('/')
+  }
+
   const handleDelete = async (qsId: number) => {
     if (!confirm('この質問セットを削除しますか？')) return
     await api.deleteQuestionSet(qsId)
@@ -76,7 +82,7 @@ export default function RoomPage() {
     <>
       <div className="header">
         <h1>{roomName}</h1>
-        <Link to="/" className="back-link">退室</Link>
+        <button onClick={handleLeave} className="back-link">退室</button>
       </div>
 
       <div className="card">
